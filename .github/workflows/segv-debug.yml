@@ -51,6 +51,21 @@ jobs:
           echo "--- ldd (grpc)"; ldd $G | grep -E "absl|grpc|ssl|protobuf|cares|re2|upb|stdc" | head -20
           echo "--- php build"; php -i | grep -E "^Build (Date|System)|^Configure Command" | cut -c1-300
           echo "--- packages"; dpkg -l | grep -iE "php8.5|grpc|libabsl20" | awk '{print $2, $3}' | head -30
+      - name: "A/B: is the crash caused by dlclose() of grpc.so at shutdown?"
+        continue-on-error: true
+        run: |
+          set +e
+          for mode in default dont_unload; do
+            crashes=0; total=10
+            for i in $(seq 1 $total); do
+              if [ "$mode" = dont_unload ]; then export ZEND_DONT_UNLOAD_MODULES=1; else unset ZEND_DONT_UNLOAD_MODULES; fi
+              php -dzend.assertions=1 vendor/bin/phpunit ${{ matrix.target }} > /tmp/ab.txt 2>&1
+              rc=$?
+              [ $rc -eq 139 ] && crashes=$((crashes+1))
+              echo "  [$mode] run $i exit=$rc"
+            done
+            echo "RESULT [$mode]: $crashes/$total runs segfaulted"
+          done
       - name: "Run until it segfaults, then analyse the core"
         continue-on-error: true
         run: |
