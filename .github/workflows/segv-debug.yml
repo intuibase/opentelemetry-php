@@ -2,7 +2,7 @@ name: segv-debug
 
 on:
   push:
-    branches: ['tmp/ci-segv-debug']
+    branches: ['tmp/ci-segv-debug', 'tmp/ci-segv-main']
   workflow_dispatch:
 
 permissions:
@@ -10,20 +10,18 @@ permissions:
 
 jobs:
   segv:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: full-suite
+          - name: full-suite-ubuntu-26.04
+            os: ubuntu-26.04
             target: --testsuite unit
-          - name: sdk-trace-dir
-            target: tests/Unit/SDK/Trace
-          - name: auto-root-span-test
-            target: tests/Unit/SDK/Trace/AutoRootSpanTest.php
-          - name: http-body-capture-test
-            target: tests/Unit/SDK/Trace/HttpBodyCaptureTest.php
+          - name: full-suite-ubuntu-24.04
+            os: ubuntu-24.04
+            target: --testsuite unit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
