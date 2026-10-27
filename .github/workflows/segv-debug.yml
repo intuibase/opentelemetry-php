@@ -35,12 +35,20 @@ jobs:
           php -m | tr '\n' ' '
           php --ri opentelemetry | head -8
           php --ri xdebug | grep -iE "version|mode"
-      - name: Facts
+      - name: Facts about the grpc extension
+        continue-on-error: true
         run: |
-          lsb_release -d; ldd --version | head -1; php -v | head -1; which php; file "$(which php)" | cut -c1-200
-          php --ri opentelemetry | grep -iE "version|support"; php --ri xdebug | grep -iE "^Version|Mode"
-      - name: Install gdb
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+          set +e
+          D=$(php -r 'echo ini_get("extension_dir");'); echo "ext dir: $D"
+          G=$D/grpc.so; ls -la $G
+          echo "--- dpkg -S"; dpkg -S $G 2>&1 | head -3
+          echo "--- version"; php --ri grpc | head -12
+          echo "--- ini"; php --ini | grep -iE "grpc|opentelemetry|xdebug"; php -i | grep -iE "^grpc\."
+          echo "--- NEEDED"; readelf -d $G | grep -E "NEEDED|SONAME|RUNPATH|RPATH"
+          echo "--- debug sections / stripped?"; readelf -S $G | grep -cE "\.debug_" ; file -L $G | cut -c1-240
+          echo "--- ldd (grpc)"; ldd $G | grep -E "absl|grpc|ssl|protobuf|cares|re2|upb|stdc" | head -20
+          echo "--- php build"; php -i | grep -E "^Build (Date|System)|^Configure Command" | cut -c1-300
+          echo "--- packages"; dpkg -l | grep -iE "php8.5|grpc|libabsl20" | awk '{print $2, $3}' | head -30
       - name: "Run until it segfaults, then analyse the core"
         continue-on-error: true
         run: |
@@ -59,10 +67,33 @@ jobs:
           for c in /tmp/core.*; do
             [ -f "$c" ] || continue
             echo "##### core: $c"
-            gdb -batch -nx -ex "set pagination off" -ex "set print frame-arguments none" \
-              -ex "echo \n=== CRASHING THREAD ===\n" -ex "info threads" -ex "bt 30" \
-              -ex "echo \n=== SIGNAL/INSN ===\n" -ex "info registers rip" -ex "x/4i \$rip" -ex "p \$_siginfo._sifields._sigfault.si_addr" \
-              -ex "echo \n=== MAIN THREAD ===\n" -ex "thread 1" -ex "bt 25" \
+            export DEBUGINFOD_URLS="https://debuginfod.ubuntu.com"
+            gdb -batch -nx -ex "set pagination off" -ex "set debuginfod enabled on" -ex "set print frame-arguments none" \
+              -ex "echo \n=== THREADS ===\n" -ex "info threads" \
+              -ex "echo \n=== CRASHING THREAD (1) ===\n" -ex "thread 1" -ex "bt 30" \
+              -ex "echo \n=== SIGNAL/RIP ===\n" -ex "info registers rip rsp rbp" -ex "p \$_siginfo.si_signo" -ex "p \$_siginfo.si_code" -ex "p \$_siginfo._sifields._sigfault.si_addr" -ex "info symbol \$rip" \
+              -ex "echo \n=== STACK WORDS OF CRASHING THREAD (resolved) ===\n" -ex "x/64a \$rsp" \
+              -ex "echo \n=== MAIN THREAD (2), who called munmap ===\n" -ex "thread 2" -ex "bt 40" \
+              -ex "echo \n=== OTHER THREADS ===\n" -ex "thread apply 3-6 bt 12" \
+              -ex "echo \n=== MAPPINGS around the crash address ===\n" -ex "info proc mappings" \
+              -ex "echo \n=== SHARED LIBS (grpc/absl/php) ===\n" -ex "info sharedlibrary" \
               "$(command -v php)" "$c" > /tmp/gdb-core.txt 2>&1
-            grep -vE "^\[New |^\[Thread|^Reading symbols|^warning: |Yes \(\*\)|^0x[0-9a-f]+ +0x[0-9a-f]+" /tmp/gdb-core.txt | cut -c1-300 | head -150
+            echo "---- full gdb output: $(wc -l < /tmp/gdb-core.txt) lines"
+            awk '/=== SHARED LIBS/{f=1} f&&/grpc|absl|opentelemetry|xdebug|protobuf|libstdc|libc\.so|ld-linux/{print} !f{print}' /tmp/gdb-core.txt \
+              | grep -vE "^\[New |^\[Thread|^Reading symbols|^warning: |^Downloading|^This GDB supports" \
+              | awk '/=== MAPPINGS/{m=1} m&&!/=== MAPPINGS/{ if ($0 ~ /Start Addr|0x[0-9a-f]+ +0x[0-9a-f]+/) {print} next} {print}' \
+              | cut -c1-260 | head -260
+            echo "---- mappings near the crash address:"
+            ADDR=$(grep -oE "si_addr\) = \(void \*\) 0x[0-9a-f]+|\\$[0-9]+ = \(void \*\) 0x[0-9a-f]+" /tmp/gdb-core.txt | grep -oE "0x[0-9a-f]+" | tail -1); echo "crash addr: $ADDR"
+            if [ -n "$ADDR" ]; then
+              A=$((ADDR))
+              echo "mapping that contains the address (empty = it is not mapped):"
+              grep -E "^\s*0x[0-9a-f]+\s+0x[0-9a-f]+" /tmp/gdb-core.txt | while read lo hi rest; do
+                if [ $((lo)) -le $A ] && [ $A -lt $((hi)) ]; then echo "  $lo $hi $rest"; fi
+              done
+              echo "closest mappings below the address:"
+              grep -E "^\s*0x[0-9a-f]+\s+0x[0-9a-f]+" /tmp/gdb-core.txt | while read lo hi rest; do
+                if [ $((hi)) -le $A ] && [ $((A - hi)) -lt 33554432 ]; then echo "  $lo $hi $rest"; fi
+              done | tail -4
+            fi
           done
