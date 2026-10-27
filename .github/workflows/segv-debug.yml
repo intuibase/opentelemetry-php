@@ -41,22 +41,20 @@ jobs:
           php --ri opentelemetry | grep -iE "version|support"; php --ri xdebug | grep -iE "^Version|Mode"
       - name: Install gdb
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gdb
-      - name: "1. Control: plain run, no debugger"
-        continue-on-error: true
-        run: |
-          set +e
-          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} > /tmp/plain.txt 2>&1
-          echo "EXIT CODE: $?"
-          grep -E "^Tests:|^OK" /tmp/plain.txt
-      - name: "2. Core dump, analysed after the fact"
+      - name: "Run until it segfaults, then analyse the core"
         continue-on-error: true
         run: |
           set +e
           sudo sysctl -w kernel.core_pattern='/tmp/core.%e.%p'
           ulimit -c unlimited
-          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} > /tmp/core-run.txt 2>&1
-          echo "EXIT CODE: $?"
-          grep -E "^Tests:|^OK" /tmp/core-run.txt
+          crashes=0
+          for i in 1 2 3 4 5 6 7 8; do
+            php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} > /tmp/run-$i.txt 2>&1
+            rc=$?
+            echo "attempt $i: exit=$rc $(grep -E '^Tests:' /tmp/run-$i.txt)"
+            if [ $rc -eq 139 ]; then crashes=$((crashes+1)); break; fi
+          done
+          echo "crashes=$crashes"
           ls -la /tmp/core.* 2>&1 || true
           for c in /tmp/core.*; do
             [ -f "$c" ] || continue
@@ -68,11 +66,3 @@ jobs:
               "$(command -v php)" "$c" > /tmp/gdb-core.txt 2>&1
             grep -vE "^\[New |^\[Thread|^Reading symbols|^warning: |Yes \(\*\)|^0x[0-9a-f]+ +0x[0-9a-f]+" /tmp/gdb-core.txt | cut -c1-300 | head -150
           done
-      - name: "3. gdb with ASLR left on"
-        continue-on-error: true
-        run: |
-          gdb -batch -nx -ex "set pagination off" -ex "set confirm off" -ex "set disable-randomization off" \
-            -ex "handle SIGPIPE nostop noprint pass" \
-            -ex run -ex "echo \n=== BACKTRACE ===\n" -ex bt -ex "thread apply all bt" \
-            --args php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} \
-            2>&1 | grep -E "SIG|Inferior|exited normally|^#[0-9]+ |=== |Tests:" | grep -v "Thread 0x" | tail -80
