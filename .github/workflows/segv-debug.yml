@@ -35,6 +35,8 @@ jobs:
           php -m | tr '\n' ' '
           php --ri opentelemetry | head -8
           php --ri xdebug | grep -iE "version|mode"
+      - name: Install gdb
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gdb
       - name: Facts about the grpc extension
         continue-on-error: true
         run: |
