@@ -42,12 +42,30 @@ jobs:
           php --ri xdebug | grep -iE "version|mode"
       - name: Install gdb
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gdb
-      - name: PHPUnit with coverage under gdb
+      - name: "1. Control: plain run, no debugger"
+        continue-on-error: true
         run: |
+          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} > /tmp/plain.txt 2>&1
+          echo "EXIT CODE: $?"
+          grep -E "^Tests:|^OK" /tmp/plain.txt
+      - name: "2. Core dump, analysed after the fact"
+        continue-on-error: true
+        run: |
+          sudo sysctl -w kernel.core_pattern='/tmp/core.%e.%p'
           ulimit -c unlimited
-          gdb -batch -nx -ex "set pagination off" -ex "set confirm off" \
+          php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} > /tmp/core-run.txt 2>&1
+          echo "EXIT CODE: $?"
+          grep -E "^Tests:|^OK" /tmp/core-run.txt
+          ls -la /tmp/core.* 2>&1 || true
+          for c in /tmp/core.*; do
+            [ -f "$c" ] || continue
+            gdb -batch -nx -ex "set pagination off" -ex "echo \n=== BACKTRACE ===\n" -ex bt -ex "echo \n=== ALL THREADS ===\n" -ex "thread apply all bt" -ex "echo \n=== REGISTERS/INSN ===\n" -ex "info registers rip" -ex "x/6i \$rip" -ex "echo \n=== SHARED ===\n" -ex "info sharedlibrary" "$(command -v php)" "$c" 2>&1 | tail -120
+          done
+      - name: "3. gdb with ASLR left on"
+        continue-on-error: true
+        run: |
+          gdb -batch -nx -ex "set pagination off" -ex "set confirm off" -ex "set disable-randomization off" \
             -ex "handle SIGPIPE nostop noprint pass" \
             -ex run -ex "echo \n=== BACKTRACE ===\n" -ex bt -ex "thread apply all bt" \
-            -ex "echo \n=== INFO SHARED ===\n" -ex "info sharedlibrary" \
             --args php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} \
-            2>&1 | grep -vE "^\s+(Methods|Lines):|^OpenTelemetry\\\\|^\s*$" | tail -150
+            2>&1 | grep -E "SIG|Inferior|exited normally|^#[0-9]+ |=== |Tests:" | grep -v "Thread 0x" | tail -80
