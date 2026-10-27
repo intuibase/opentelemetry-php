@@ -62,7 +62,7 @@ jobs:
             [ -f "$c" ] || continue
             echo "##### core: $c"
             gdb -batch -nx -ex "set pagination off" -ex "set print frame-arguments none" \
-              -ex "echo \n=== CRASHING THREAD ===\n" -ex "info threads" -ex bt 30 \
+              -ex "echo \n=== CRASHING THREAD ===\n" -ex "info threads" -ex "bt 30" \
               -ex "echo \n=== SIGNAL/INSN ===\n" -ex "info registers rip" -ex "x/4i \$rip" -ex "p \$_siginfo._sifields._sigfault.si_addr" \
               -ex "echo \n=== MAIN THREAD ===\n" -ex "thread 1" -ex "bt 25" \
               "$(command -v php)" "$c" > /tmp/gdb-core.txt 2>&1
