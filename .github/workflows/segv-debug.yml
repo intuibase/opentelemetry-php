@@ -1,0 +1,53 @@
+name: segv-debug
+
+on:
+  push:
+    branches: ['tmp/ci-segv-debug']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  segv:
+    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: full-suite
+            target: --testsuite unit
+          - name: sdk-trace-dir
+            target: tests/Unit/SDK/Trace
+          - name: auto-root-span-test
+            target: tests/Unit/SDK/Trace/AutoRootSpanTest.php
+          - name: http-body-capture-test
+            target: tests/Unit/SDK/Trace/HttpBodyCaptureTest.php
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.5'
+          coverage: xdebug
+          extensions: ast, grpc, opentelemetry, protobuf, yaml
+      - run: composer install --prefer-dist --no-progress
+      - name: Environment
+        run: |
+          php -v
+          php -m | tr '\n' ' '
+          php --ri opentelemetry | head -8
+          php --ri xdebug | grep -iE "version|mode"
+      - name: Install gdb
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gdb
+      - name: PHPUnit with coverage under gdb
+        run: |
+          ulimit -c unlimited
+          gdb -batch -nx -ex "set pagination off" -ex "set confirm off" \
+            -ex "handle SIGPIPE nostop noprint pass" \
+            -ex run -ex "echo \n=== BACKTRACE ===\n" -ex bt -ex "thread apply all bt" \
+            -ex "echo \n=== INFO SHARED ===\n" -ex "info sharedlibrary" \
+            --args php -dzend.assertions=1 vendor/bin/phpunit --coverage-text --coverage-clover=coverage.clover ${{ matrix.target }} \
+            2>&1 | grep -vE "^\s+(Methods|Lines):|^OpenTelemetry\\\\|^\s*$" | tail -150
