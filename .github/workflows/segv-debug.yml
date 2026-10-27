@@ -60,7 +60,13 @@ jobs:
           ls -la /tmp/core.* 2>&1 || true
           for c in /tmp/core.*; do
             [ -f "$c" ] || continue
-            gdb -batch -nx -ex "set pagination off" -ex "echo \n=== BACKTRACE ===\n" -ex bt -ex "echo \n=== ALL THREADS ===\n" -ex "thread apply all bt" -ex "echo \n=== REGISTERS/INSN ===\n" -ex "info registers rip" -ex "x/6i \$rip" -ex "echo \n=== SHARED ===\n" -ex "info sharedlibrary" "$(command -v php)" "$c" 2>&1 | tail -120
+            echo "##### core: $c"
+            gdb -batch -nx -ex "set pagination off" -ex "set print frame-arguments none" \
+              -ex "echo \n=== CRASHING THREAD ===\n" -ex "info threads" -ex bt 30 \
+              -ex "echo \n=== SIGNAL/INSN ===\n" -ex "info registers rip" -ex "x/4i \$rip" -ex "p \$_siginfo._sifields._sigfault.si_addr" \
+              -ex "echo \n=== MAIN THREAD ===\n" -ex "thread 1" -ex "bt 25" \
+              "$(command -v php)" "$c" > /tmp/gdb-core.txt 2>&1
+            grep -vE "^\[New |^\[Thread|^Reading symbols|^warning: |Yes \(\*\)|^0x[0-9a-f]+ +0x[0-9a-f]+" /tmp/gdb-core.txt | cut -c1-300 | head -150
           done
       - name: "3. gdb with ASLR left on"
         continue-on-error: true
